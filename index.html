@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>NV_Strategy_Elite_Edition</title>
+<style>
+body {
+    margin: 0;
+    background: #1b1b1b;
+    color: white;
+    font-family: Arial;
+    overflow: hidden;
+}
+#ui {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    background: #111;
+    padding: 8px;
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    align-items: center;
+    z-index: 10;
+    border-bottom: 2px solid #444;
+}
+button, input {
+    background: #333;
+    color: white;
+    border: 1px solid #666;
+    padding: 5px 10px;
+    cursor: pointer;
+}
+button:hover {
+    background: #555;
+}
+#money, #reserve, #tankReserve, #airReserve {
+    font-weight: bold;
+    margin-left: 10px;
+    padding: 2px 5px;
+    background: #222;
+    border-radius: 4px;
+}
+#map-wrapper {
+    position: absolute;
+    top: 80px;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    overflow: hidden;
+}
+#map {
+    position: absolute;
+}
+.tile {
+    position: absolute;
+    width: 90px;
+    height: 90px;
+    border-radius: 8px;
+    border: 2px solid black;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    font-size: 11px;
+    cursor: pointer;
+    text-align: center;
+    transition: transform 0.1s;
+}
+.tile:hover {
+    transform: scale(1.05);
+}
+.selected {
+    outline: 4px solid yellow;
+    z-index: 5;
+}
+
+/* Цвета стран */
+.Germany { background: #666; }
+.France { background: #2f5eff; }
+.USSR { background: #c0392b; }
+.UK { background: #8e44ad; }
+.Spain { background: #e67e22; }
+.Italy { background: #16a085; }
+.Poland { background: white; color: black; }
+.Yugoslavia { background: #27ae60; }
+.Romania { background: #f1c40f; color: black; }
+.Sweden { background: #2980b9; }
+.Finland { background: #95a5a6; color: black; }
+
+/* Эффект бомбардировки */
+.bombed {
+    box-shadow: 0 0 20px red;
+    border: 2px dashed red !important;
+}
+</style>
+</head>
+<body>
+
+<div id="ui">
+    <input id="countryInput" placeholder="Напишите страну">
+    <button onclick="startGame()">Начать</button>
+    <button onclick="mode='inspect'">Плитка</button>
+    <button onclick="mode='build'">Завод</button>
+    <button onclick="mode='deploy'">Разместить🪖</button>
+    <button onclick="mode='tankFactory'">Завод танков</button>
+    <button onclick="mode='airfield'">Аэродром</button>
+    <button onclick="buyPlane()">Купить самолет</button>
+    <button onclick="mode='deployPlane'">Разместить самолет✈️</button>
+    <button onclick="mode='airAttack'">АТАКОВАТЬ САМОЛЕТОМ🔥</button>
+    <button onclick="mode='attack'">Атаковать</button>
+    <button onclick="makePeace()">Мир</button>
+    <div id="money">💰 0</div>
+    <div id="reserve">🪖 0</div>
+    <div id="tankReserve">🚓 0</div>
+    <div id="airReserve">✈️ 0</div>
+</div>
+
+<div id="map-wrapper">
+    <div id="map"></div>
+</div>
+
+<script>
+// --- ПЕРЕМЕННЫЕ И СОСТОЯНИЕ ---
+let mode = null;
+let playerCountry = null;
+let money = 0;
+let reserve = 0;
+let tankReserve = 0;
+let planes = 0;
+let selectedTile = null;
+let activeEvent = null;
+let eventStep = 'good'; 
+let tilesCapturedThisTurn = 0; 
+
+const tiles = [];
+const wars = {};
+const map = document.getElementById("map");
+
+// --- СПИСОК СТОЛИЦ ---
+const capitals = {
+    Germany: 'Berlin',
+    France: 'Paris',
+    USSR: 'Moscow',
+    UK: 'London',
+    Spain: 'Madrid',
+    Italy: 'Rome',
+    Romania: 'Bucharest',
+    Yugoslavia: 'Belgrade',
+    Finland: 'Helsinki',
+    Sweden: 'Stockholm',
+    Poland: 'Warsaw'
+};
+
+// --- ОБНОВЛЕНИЕ ИНТЕРФЕЙСА ---
+function updateUI() {
+    document.getElementById("money").innerText = "💰 " + money;
+    document.getElementById("reserve").innerText = "🪖 " + reserve;
+    document.getElementById("tankReserve").innerText = "🚓 " + Math.floor(tankReserve);
+    document.getElementById("airReserve").innerText = "✈️ " + planes;
+}
+
+// --- СОЗДАНИЕ ПЛИТКИ ---
+function addTile(name, country, x, y) {
+    let t = {
+        name: name,
+        country: country,
+        x: x,
+        y: y,
+        army: 0,
+        tanks: 0,
+        planes: 0,
+        factories: 0,
+        maxFactories: country === playerCountry ? 2 : 1,
+        tankFactory: false,
+        tankTimer: 0,
+        airfield: false,
+        isBombed: false // Статус бомбардировки
+    };
+    tiles.push(t);
+
+    let el = document.createElement("div");
+    el.className = "tile " + country;
+    el.style.left = x + "px";
+    el.style.top = y + "px";
+    el.onclick = () => tileClick(t, el);
+    t.el = el;
+    map.appendChild(el);
+    updateTile(t);
+}
+
+// --- ВИЗУАЛЬНОЕ ОБНОВЛЕНИЕ ПЛИТКИ ---
+function updateTile(t) {
+    let airInfo = t.airfield ? '<div style="color:cyan; font-size:9px">✈️ АЭРОДРОМ</div>' : '';
+    let planesInTile = t.planes > 0 ? `<div style="color:yellow">✈️ ${t.planes}</div>` : '';
+    let bombEffect = t.isBombed ? ' bombed' : '';
+    
+    t.el.className = "tile " + t.country + bombEffect;
+    t.el.innerHTML = `<b>${t.name}</b>
+    <div>🪖 ${t.army}</div>
+    <div>🚓 ${t.tanks}</div>
+    ${planesInTile}
+    <div>🏭 ${t.factories}/${t.maxFactories}${t.tankFactory ? ' 🏗' : ''}</div>
+    ${airInfo}`;
+}
+
+// --- ПОКУПКА САМОЛЕТА ---
+function buyPlane() {
+    if (money >= 5000) {
+        let anyAirfield = tiles.some(t => t.country === playerCountry && t.airfield);
+        if (anyAirfield) {
+            money -= 5000;
+            planes++;
+            updateUI();
+        } else {
+            alert("Для покупки авиации нужен хотя бы один аэродром в ваших владениях!");
+        }
+    } else {
+        alert("Недостаточно денег (нужно 5000)");
+    }
+}
+
+// --- ЛОГИКА КЛИКА ПО ГОРОДУ ---
+function tileClick(t, el) {
+    document.querySelectorAll('.tile').forEach(e => e.classList.remove('selected'));
+    el.classList.add('selected');
+
+    // Просмотр информации
+    if (mode === 'inspect') {
+        alert(`ИНФО: ${t.name}\nСтрана: ${t.country}\nВойска: ${t.army}\nТанки: ${t.tanks}\nСамолеты в городе: ${t.planes}\nАэродром: ${t.airfield ? 'Да' : 'Нет'}`);
+    }
+
+    // Строительство завода
+    if (mode === 'build' && t.country === playerCountry) {
+        if (t.factories < t.maxFactories && money >= 5000) {
+            money -= 5000;
+            t.factories++;
+        }
+    }
+
+    // Танковый завод
+    if (mode === 'tankFactory') {
+        if (capitals[t.country] === t.name && !t.tankFactory && money >= 25000) {
+            money -= 25000;
+            t.tankFactory = true;
+            t.tankTimer = 0;
+        }
+    }
+
+    // Строительство аэродрома
+    if (mode === 'airfield' && t.country === playerCountry) {
+        if (!t.airfield && money >= 30000) {
+            money -= 30000;
+            t.airfield = true;
+        }
+    }
+
+    // Размещение солдат/танков
+    if (mode === 'deploy' && t.country === playerCountry) {
+        let type = prompt("Что разместить? (1 - солдаты, 2 - танки)");
+        let n = parseInt(prompt("Сколько штук?"));
+        if (type === '1' && n <= reserve) {
+            reserve -= n; t.army += n;
+        } else if (type === '2' && n <= Math.floor(tankReserve)) {
+            tankReserve -= n; t.tanks += n;
+        }
+    }
+
+    // РАЗМЕСТИТЬ САМОЛЕТ
+    if (mode === 'deployPlane' && t.country === playerCountry) {
+        if (t.airfield) {
+            let n = parseInt(prompt(`У вас в резерве ${planes} самолетов. Сколько разместить в ${t.name}?`));
+            if (n > 0 && n <= planes) {
+                planes -= n;
+                t.planes += n;
+            } else {
+                alert("Некорректное количество!");
+            }
+        } else {
+            alert("Разместить самолет можно только в провинции с аэродромом!");
+        }
+    }
+
+    // АТАКА САМОЛЕТОМ
+    if (mode === 'airAttack' && t.country !== playerCountry) {
+        if (selectedTile && selectedTile.country === playerCountry && selectedTile.planes > 0) {
+            let n = parseInt(prompt(`В городе ${selectedTile.name} есть ${selectedTile.planes} самолетов. Сколько отправить на бомбардировку ${t.name}?`));
+            if (n > 0 && n <= selectedTile.planes) {
+                selectedTile.planes -= n;
+                // Эффект авиаудара
+                t.army = 0;
+                t.tanks = 0;
+                t.isBombed = true;
+                wars[t.country] = true;
+                alert(`Авиаудар нанесен! В ${t.name} уничтожена вся оборона. Страна парализована.`);
+            }
+        } else {
+            alert("Сначала выберите свой город с самолетами!");
+        }
+    }
+
+    // Обычная атака
+    if (mode === 'attack' && selectedTile && selectedTile !== t) {
+        attack(selectedTile, t);
+    }
+
+    selectedTile = t;
+    updateTile(t);
+    updateUI();
+}
+
+// --- ФУНКЦИЯ АТАКИ ---
+function attack(from, to) {
+    let type = prompt("Чем атакуем? (1 - солдаты, 2 - танки)");
+    let n = parseInt(prompt("Количество?"));
+
+    if (to.country !== playerCountry) wars[to.country] = true;
+
+    // Если город под бомбами - захват мгновенный
+    if (to.isBombed) {
+        conquerCity(to, from, type, n);
+        return;
+    }
+
+    // Танковая атака
+    if (type === '2' && from.tanks >= n) {
+        from.tanks -= n;
+        let power = n * 100;
+        if (power >= to.army) {
+            conquerCity(to, from, '2', 0);
+        } else {
+            to.army -= power;
+        }
+    }
+
+    // Пехотная атака
+    if (type === '1' && from.army >= n) {
+        from.army -= n;
+        if (n >= to.army) {
+            conquerCity(to, from, '1', n - to.army);
+        } else {
+            to.army -= n;
+        }
+    }
+
+    updateTile(from);
+    updateTile(to);
+}
+
+// --- ЗАХВАТ ГОРОДА ---
+function conquerCity(to, from, type, remaining) {
+    let oldCountry = to.country;
+    to.country = playerCountry;
+    to.army = remaining;
+    to.tanks = 0;
+    to.isBombed = false; // Снимаем эффект бомбы после захвата
+    to.factories = 0;
+    to.maxFactories = 2;
+    tilesCapturedThisTurn++;
+    
+    alert(`${to.name} переходит под ваш контроль!`);
+    
+    if (capitals[oldCountry] === to.name) {
+        capitulate(oldCountry);
+    }
+}
+
+// --- КАПИТУЛЯЦИЯ ---
+function capitulate(country) {
+    tiles.forEach(t => {
+        if (t.country === country) {
+            t.country = playerCountry;
+            t.army = 0;
+            t.tanks = 0;
+            t.isBombed = false;
+            t.factories = 0;
+            t.maxFactories = 2;
+            updateTile(t);
+        }
+    });
+    delete wars[country];
+    alert(country + " ПОЛНОСТЬЮ КАПИТУЛИРОВАЛА!");
+}
+
+// --- МИР ---
+function makePeace() {
+    for (let c in wars) delete wars[c];
+    alert("Все войны прекращены.");
+}
+
+// --- СТАРТ ИГРЫ ---
+function startGame() {
+    playerCountry = document.getElementById("countryInput").value.trim();
+    if(!playerCountry) { alert("Введите название страны!"); return; }
+    
+    money = 500;
+    reserve = 0;
+    tankReserve = 0;
+    planes = 0;
+    eventStep = 'good';
+
+    tiles.forEach(t => {
+        t.isBombed = false;
+        if (t.country === playerCountry) {
+            t.factories = 0; t.maxFactories = 2; t.army = 0; t.tanks = 0; t.planes = 0; t.tankFactory = false; t.airfield = false;
+        } else {
+            t.factories = 1; t.maxFactories = 1; t.army = 0; t.tanks = 0; t.planes = 0; t.tankFactory = false; t.airfield = false;
+        }
+        updateTile(t);
+    });
+    updateUI();
+}
+
+// --- ЕЖЕСЕКУНДНЫЙ ЦИКЛ (Доход и производство) ---
+setInterval(() => {
+    if(!playerCountry) return;
+    tiles.forEach(t => {
+        if (t.country === playerCountry) {
+            if (activeEvent !== 'strike') money += 15;
+            if (t.factories > 0) reserve += t.factories;
+        } else {
+            // Если город разбомблен, солдаты НЕ спавнятся
+            if (!t.isBombed) {
+                t.army += 1;
+            }
+        }
+        // Производство танков
+        if (t.tankFactory) {
+            t.tankTimer++;
+            if (t.tankTimer >= 10) {
+                t.tanks++;
+                t.tankTimer = 0;
+            }
+        }
+        updateTile(t);
+    });
+    updateUI();
+}, 1000);
+
+// --- СОБЫТИЯ (Раз в 5 минут) ---
+setInterval(() => {
+    if (!playerCountry) return;
+    let capitalName = capitals[playerCountry];
+    let capTile = tiles.find(t => t.name === capitalName && t.country === playerCountry);
+
+    if (eventStep === 'good') {
+        if (Math.random() < 0.5) {
+            alert("БОНУС: Прилив патриотизма! +500 солдат в столицу.");
+            if (capTile) capTile.army += 500;
+        } else {
+            alert("БОНУС: Перебежчики! 10% армии врага перейдут к вам через 3 минуты.");
+            setTimeout(() => {
+                let enemySum = 0;
+                tiles.forEach(t => { if(t.country !== playerCountry) enemySum += t.army; });
+                let bonus = Math.floor(enemySum * 0.10);
+                if (capTile) capTile.army += bonus;
+                alert("Войска прибыли!");
+            }, 180000);
+        }
+        eventStep = 'bad';
+    } else {
+        if (Math.random() < 0.5) {
+            alert("ДЕБАФФ: Всеобщая забастовка! (30 секунд без дохода)");
+            activeEvent = 'strike';
+            setTimeout(() => { activeEvent = null; }, 30000);
+        } else {
+            alert("ДЕБАФФ: Дезертирство! Солдаты уйдут через 3 минуты, если не будет новых захватов!");
+            tilesCapturedThisTurn = 0;
+            setTimeout(() => {
+                if (tilesCapturedThisTurn === 0) {
+                    tiles.forEach(t => { if(t.country === playerCountry) t.army = Math.floor(t.army * 0.9); });
+                }
+            }, 180000);
+        }
+        eventStep = 'good';
+    }
+}, 300000);
+
+// --- АТАКА БОТА ---
+setInterval(() => {
+    for (let enemy in wars) {
+        let eTiles = tiles.filter(t => t.country === enemy && !t.isBombed);
+        let pTiles = tiles.filter(t => t.country === playerCountry);
+        eTiles.forEach(et => {
+            if (et.army > 5 && pTiles.length > 0) {
+                let target = pTiles[Math.floor(Math.random() * pTiles.length)];
+                target.army -= 2; // Боты атакуют слабее
+                if (target.army < 0) target.army = 0;
+                updateTile(target);
+            }
+        });
+    }
+}, 4000);
+
+// --- ГЕНЕРАЦИЯ КАРТЫ (ВСЕ ГОРОДА) ---
+addTile('Berlin', 'Germany', 500, 200);
+addTile('Munich', 'Germany', 500, 320);
+addTile('Hamburg', 'Germany', 500, 120);
+
+addTile('Paris', 'France', 340, 250);
+addTile('Marseille', 'France', 360, 370);
+
+addTile('Madrid', 'Spain', 200, 380);
+addTile('Barcelona', 'Spain', 260, 350);
+
+addTile('London', 'UK', 200, 180);
+addTile('Manchester', 'UK', 200, 110);
+
+addTile('Rome', 'Italy', 460, 420);
+addTile('Sicily', 'Italy', 480, 520);
+
+addTile('Warsaw', 'Poland', 620, 260);
+addTile('Krakow', 'Poland', 620, 330);
+
+addTile('Belgrade', 'Yugoslavia', 560, 380);
+addTile('Zagreb', 'Yugoslavia', 520, 360);
+addTile('Sarajevo', 'Yugoslavia', 580, 420);
+
+addTile('Moscow', 'USSR', 760, 200);
+addTile('Leningrad', 'USSR', 760, 120);
+addTile('Kiev', 'USSR', 700, 300);
+addTile('Minsk', 'USSR', 700, 220);
+
+addTile('Bucharest', 'Romania', 680, 400);
+addTile('Cluj-Napoca', 'Romania', 650, 350);
+
+addTile('Stockholm', 'Sweden', 700, 60);
+addTile('Helsinki', 'Finland', 760, 60);
+
+</script>
+</body>
+</html>
